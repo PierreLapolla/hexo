@@ -1,15 +1,23 @@
 [project]
-name = "app"
+name = "hexo"
 version = "0.1.0"
-description = "Add your description here"
+description = "A fast, reusable Python engine for Hexo on an infinite hex grid."
 readme = "README.md"
 license = {file = "LICENSE"}
 authors = [
     {name = "Pierre LAPOLLA"}
 ]
+keywords = [
+    "hexo",
+    "board-game",
+    "game-engine",
+    "hex-grid",
+    "connect-six",
+    "ai",
+]
 requires-python = ">=3.13"
 dependencies = [
-    "pedros>=0.12.2",
+    "pedros>=0.12.3",
 ]
 
 [build-system]
@@ -19,10 +27,11 @@ build-backend = "hatchling.build"
 [dependency-groups]
 dev = [
     "pre-commit>=3.7.1",
+    "pytest-benchmark>=5.1.0",
     "pytest>=8.3.5",
-    "pytest-cov>=6.1.1",
-    "rich>=14.2.0",
-    "ruff>=0.15.0",
+    "pytest-cov>=7.0.1",
+    "rich>=14.3.3",
+    "ruff>=0.15.8",
 ]
 
 [tool.pytest.ini_options]
