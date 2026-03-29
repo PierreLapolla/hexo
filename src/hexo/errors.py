@@ -1,8 +1,3 @@
-"""
-Define exception types used by the Hexo engine.
-"""
-
-
 class HexoError(Exception):
     """
     Represent the base exception for all Hexo engine failures.

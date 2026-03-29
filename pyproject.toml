@@ -1,6 +1,6 @@
 [project]
 name = "hexo"
-version = "0.1.0"
+version = "0.2.0"
 description = "A fast, reusable Python engine for Hexo on an infinite hex grid."
 readme = "README.md"
 license = {file = "LICENSE"}

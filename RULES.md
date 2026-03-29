@@ -54,13 +54,3 @@ Because `P1` starts with `(0, 0)`, there is always at least one occupied cell be
 
 - The game ends as soon as a win condition is met.
 - If both stones of a turn are placed and both create winning lines for the same player, the result is still a single win for that player.
-
-## 7. Notes for Engine API
-
-- Keep rule validation deterministic and side-effect free.
-- Recommended checks for a turn:
-  - Correct number of stones for that turn stage.
-  - No duplicate cells in the move.
-  - All cells empty.
-  - Distance rule for each placed stone.
-  - Win detection after applying the full turn.

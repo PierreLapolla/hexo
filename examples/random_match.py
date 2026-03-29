@@ -4,14 +4,16 @@ import random
 
 from pedros import get_logger, timed
 
-from hexo import Coord, GameStatus, Hexo
+from hexo import GameStatus, Hexo
+
+Coord = tuple[int, int]
 
 
 def random_engine(game: Hexo, rng: random.Random) -> Coord:
-    candidates = game.legal_moves()
+    candidates = game.legal_moves
     if not candidates:
         raise RuntimeError("no legal candidate placements found")
-    return rng.choice(candidates)
+    return rng.choice(tuple(candidates))
 
 
 def play_turn_random(game: Hexo, rng: random.Random) -> tuple[Coord, ...]:
