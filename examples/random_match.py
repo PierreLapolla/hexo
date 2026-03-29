@@ -30,27 +30,25 @@ def run_demo_match(seed: int = 42, max_turns: int = 100) -> GameStatus:
     rng = random.Random(seed)
     game = Hexo.new()
 
-    logger.info("Starting Hexo demo: P1=random, P2=random, seed=%s", seed)
+    logger.info(f"Starting Hexo demo: P1=random, P2=random, seed={seed}")
     logger.info("Initial center stone is fixed at (0, 0) for P1")
 
     turn_no = 1
     while game.status() is GameStatus.ONGOING and turn_no <= max_turns:
-        player = game.turn()
-        placements = play_turn_random(game, rng)
-        logger.info("Turn %s | %s (random) -> %s", turn_no, player.name, placements)
+        play_turn_random(game, rng)
         turn_no += 1
 
     status = game.status()
     if status is GameStatus.P1_WON:
         logger.info(
-            "Game finished: winner=P1 status=%s turns=%s", status.name, turn_no - 1
+            f"Game finished: winner=P1 status={status.name} turns={turn_no - 1}"
         )
     elif status is GameStatus.P2_WON:
         logger.info(
-            "Game finished: winner=P2 status=%s turns=%s", status.name, turn_no - 1
+            f"Game finished: winner=P2 status={status.name} turns={turn_no - 1}"
         )
     else:
-        logger.warning("Reached max turns (%s) with status=%s", max_turns, status.name)
+        logger.warning(f"Reached max turns ({max_turns}) with status={status.name}")
     return status
 
 
