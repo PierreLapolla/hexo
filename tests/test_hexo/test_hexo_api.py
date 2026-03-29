@@ -52,7 +52,7 @@ def test_submoves_allow_partial_turn_search_state() -> None:
 
 def test_legal_moves_produces_candidates() -> None:
     game = Hexo.new()
-    moves = game.legal_moves()
+    moves = game.legal_moves
     assert len(moves) > 0
     assert (0, 0) not in moves
     for coord in moves:
@@ -63,16 +63,16 @@ def test_legal_moves_produces_candidates() -> None:
 
 def test_legal_moves_cache_updates_on_push_and_undo() -> None:
     game = Hexo.new()
-    before = set(game.legal_moves())
+    before = set(game.legal_moves)
     move = (1, 0)
     assert move in before
 
     game.push(move)
-    during = set(game.legal_moves())
+    during = set(game.legal_moves)
     assert move not in during
 
     game.undo()
-    after = set(game.legal_moves())
+    after = set(game.legal_moves)
     assert after == before
 
 

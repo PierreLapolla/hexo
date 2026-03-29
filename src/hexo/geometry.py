@@ -1,7 +1,3 @@
-"""
-Provide geometry helpers for the axial hex grid used by Hexo.
-"""
-
 from hexo.types import Coord
 
 

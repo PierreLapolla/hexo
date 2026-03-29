@@ -1,12 +1,6 @@
-"""
-Implement the core Hexo game state and rule validation logic.
-
-This module provides the single public `Hexo` class and state transition logic.
-"""
-
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Collection, Iterator, Sequence
 
 from hexo.errors import IllegalTurnError
 from hexo.geometry import hex_distance
@@ -20,6 +14,59 @@ from hexo.types import (
     TurnRecord,
     UndoSnapshot,
 )
+
+
+class LegalMovesView(Collection[Coord]):
+    """
+    Provide a lightweight live view over an engine's legal move set.
+
+    :param engine:
+        Engine instance whose legal moves should be exposed.
+    """
+
+    def __init__(self, engine: Hexo) -> None:
+        """
+        Initialize a legal moves view for one engine.
+
+        :param engine:
+            Engine instance whose legal move cache is accessed.
+        """
+        self._engine = engine
+
+    def __iter__(self) -> Iterator[Coord]:
+        """
+        Iterate over current legal moves.
+
+        :return:
+            Iterator over legal coordinates.
+        """
+        if self._engine._winner is not None:
+            return iter(())
+        return iter(self._engine._legal_moves_cache)
+
+    def __len__(self) -> int:
+        """
+        Return number of current legal moves.
+
+        :return:
+            Number of legal coordinates.
+        """
+        if self._engine._winner is not None:
+            return 0
+        return len(self._engine._legal_moves_cache)
+
+    def __contains__(self, coord: object) -> bool:
+        """
+        Check membership in the legal move set.
+
+        :param coord:
+            Candidate coordinate object.
+        :return:
+            `True` if `coord` is a legal move.
+        """
+        if self._engine._winner is not None:
+            return False
+        return coord in self._engine._legal_moves_cache
 
 
 class Hexo:
@@ -51,7 +98,8 @@ class Hexo:
         self._winner: Player | None = None
         self._to_move = Player.P2
         self._legal_moves_cache: set[Coord] = set()
-        self._legal_moves_tuple_cache: tuple[Coord, ...] | None = None
+        self._legal_moves_view = LegalMovesView(self)
+        self._radius_offsets = self._build_radius_offsets(self.config.placement_radius)
         self._expand_legal_cache_from(self.config.opening_center)
 
     @classmethod
@@ -252,7 +300,6 @@ class Hexo:
         self._stones_by_player[self._to_move].add(coord)
         self._legal_moves_cache.discard(coord)
         added_legal = self._expand_legal_cache_from(coord)
-        self._legal_moves_tuple_cache = None
         self._pending.append(coord)
         self._undo_stack.append(
             (
@@ -266,7 +313,7 @@ class Hexo:
             )
         )
 
-        won = self._has_winning_line(self._to_move, (coord, coord))
+        won = self._has_winning_line(self._to_move, (coord,))
         if won:
             record = TurnRecord(
                 player=self._to_move, placements=tuple(self._pending), won=True
@@ -320,7 +367,6 @@ class Hexo:
             self._legal_moves_cache.add(coord)
         for added in added_legal:
             self._legal_moves_cache.discard(added)
-        self._legal_moves_tuple_cache = None
         if len(self._turn_history) > prev_history_len:
             self._turn_history = self._turn_history[:prev_history_len]
         return affected
@@ -345,18 +391,15 @@ class Hexo:
         """
         return dict(self._board)
 
-    def legal_moves(self) -> tuple[Coord, ...]:
+    @property
+    def legal_moves(self) -> Collection[Coord]:
         """
-        Return all currently legal single-placement candidates.
+        Return a live view of all currently legal single-move candidates.
 
         :return:
-            Tuple of legal coordinates.
+            Collection view of legal coordinates.
         """
-        if self._winner is not None:
-            return ()
-        if self._legal_moves_tuple_cache is None:
-            self._legal_moves_tuple_cache = tuple(self._legal_moves_cache)
-        return self._legal_moves_tuple_cache
+        return self._legal_moves_view
 
     def _expand_legal_cache_from(self, anchor: Coord) -> set[Coord]:
         """
@@ -367,20 +410,34 @@ class Hexo:
         :return:
             Coordinates that were newly introduced in the legal-move cache.
         """
-        radius = self.config.placement_radius
         aq, ar = anchor
         added: set[Coord] = set()
+        for dq, dr in self._radius_offsets:
+            coord = (aq + dq, ar + dr)
+            if coord in self._board:
+                continue
+            if coord not in self._legal_moves_cache:
+                self._legal_moves_cache.add(coord)
+                added.add(coord)
+        return added
+
+    @staticmethod
+    def _build_radius_offsets(radius: int) -> tuple[Coord, ...]:
+        """
+        Build axial offsets for a hex disc of a given radius.
+
+        :param radius:
+            Radius in hex distance.
+        :return:
+            Tuple of `(dq, dr)` offsets within the radius.
+        """
+        offsets: list[Coord] = []
         for dq in range(-radius, radius + 1):
             dr_min = max(-radius, -dq - radius)
             dr_max = min(radius, -dq + radius)
             for dr in range(dr_min, dr_max + 1):
-                coord = (aq + dq, ar + dr)
-                if coord in self._board:
-                    continue
-                if coord not in self._legal_moves_cache:
-                    self._legal_moves_cache.add(coord)
-                    added.add(coord)
-        return added
+                offsets.append((dq, dr))
+        return tuple(offsets)
 
     def _has_winning_line(self, player: Player, newly_placed: Sequence[Coord]) -> bool:
         """

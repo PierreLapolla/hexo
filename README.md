@@ -50,7 +50,7 @@ Public entry point is the `Hexo` class.
 - `game.moves_left_in_turn() -> int`: return remaining moves in current turn (`2` or `1`).
 - `game.pending_moves() -> tuple[Coord, ...]`: return moves already made in the current turn.
 - `game.is_legal_move(coord) -> tuple[bool, str | None]`: validate one submove.
-- `game.legal_moves() -> tuple[Coord, ...]`: return legal single-move candidates.
+- `game.legal_moves -> Collection[Coord]`: property that returns legal single-move candidates as a live iterable view.
 - `game.push(coord) -> TurnRecord | None`: play one move; returns `None` if turn is still partial, or `TurnRecord` when the turn completes (or wins early).
 - `game.is_legal(move) -> tuple[bool, str | None]`: validate a full 2-stone move (only when no partial turn is active).
 - `game.play(move) -> TurnRecord`: convenience wrapper that places two stones in sequence.
