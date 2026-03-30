@@ -6,28 +6,16 @@ from pedros import get_logger, timed
 
 from hexo import GameStatus, Hexo
 
-Coord = tuple[int, int]
 
-
-def random_engine(game: Hexo, rng: random.Random) -> Coord:
-    candidates = game.legal_moves
-    if not candidates:
-        raise RuntimeError("no legal candidate placements found")
-    return rng.choice(tuple(candidates))
-
-
-def play_turn_random(game: Hexo, rng: random.Random) -> tuple[Coord, ...]:
-    chosen: list[Coord] = []
+def play_turn_random(game: Hexo, rng: random.Random):
     player = game.turn()
-    while game.turn() is player and game.status() is GameStatus.ONGOING:
-        coord = random_engine(game, rng)
-        game.push(coord)
-        chosen.append(coord)
-    return tuple(chosen)
+    while game.turn() is player:
+        move = rng.choice(tuple(game.legal_moves))
+        game.push(move)
 
 
 @timed
-def run_demo_match(seed: int = 42, max_turns: int = 100) -> GameStatus:
+def run_demo_match(seed: int = 42, max_turns: int = 2000):
     logger = get_logger()
     rng = random.Random(seed)
     game = Hexo.new()
@@ -51,7 +39,6 @@ def run_demo_match(seed: int = 42, max_turns: int = 100) -> GameStatus:
         )
     else:
         logger.warning(f"Reached max turns ({max_turns}) with status={status.name}")
-    return status
 
 
 if __name__ == "__main__":

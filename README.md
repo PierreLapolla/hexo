@@ -66,26 +66,44 @@ Notes:
 ## Quickstart
 
 ```python
-from hexo import Hexo
+from hexo import GameStatus, Hexo
 
-game = Hexo.new()
-print(game.turn())  # Player.P2
 
-legal, reason = game.is_legal_move((1, 0))
-if not legal:
-    raise ValueError(reason)
-game.push((1, 0))
+def move_key(coord: tuple[int, int]) -> tuple[int, int, int]:
+    # Deterministic "closest to center" move ordering.
+    return (
+        abs(coord[0]) + abs(coord[1]) + abs(coord[0] + coord[1]),
+        coord[0],
+        coord[1],
+    )
 
-# Hook point for engines: run a search after first placement.
-# ... search code here ...
 
-record = game.push((0, 1))  # turn completes here
-print(record)  # TurnRecord
-print(game.moves_left_in_turn())  # 2
+def play_turn(game: Hexo):
+    first = min(game.legal_moves, key=move_key)
+    record = game.push(first)
+    if record is not None:  # win can happen on first placement
+        return record
 
-state = game.to_state()
-restored = Hexo.from_state(state)
-print(restored.turn())
+    second = min(game.legal_moves, key=move_key)
+    return game.push(second)
+
+
+game = Hexo.new()  # P1 center stone is pre-applied at (0, 0)
+
+for turn_no in range(1, 6):
+    if game.status() is not GameStatus.ONGOING:
+        break
+    record = play_turn(game)
+    print(f"turn {turn_no}: {record.player.name} {record.placements} won={record.won}")
+
+print("stones on board:", len(game.board()))
+print("next player:", game.turn().name)
+
+# Useful for bot search trees: snapshot, restore, undo
+snapshot = game.to_state()
+restored = Hexo.from_state(snapshot)
+affected = restored.undo()
+print("undo affected turn:", affected)
 ```
 
 ## Tests, linting and formatting

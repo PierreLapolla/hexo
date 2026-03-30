@@ -2,10 +2,27 @@ from __future__ import annotations
 
 from collections.abc import Collection, Iterator, Sequence
 
-from hexo.errors import IllegalTurnError
-from hexo.geometry import hex_distance
+from hexo._engine_utils import (
+    hex_distance,
+    build_radius_offsets,
+    expand_legal_cache_from,
+    has_winning_line_at,
+)
+from hexo.errors import (
+    DUPLICATE_COORDINATES,
+    GAME_IS_OVER,
+    ILLEGAL_MOVE,
+    ILLEGAL_PLACEMENT,
+    NO_PLACEMENT_TO_UNDO,
+    PARTIAL_TURN_IN_PROGRESS,
+    STATE_INVALID_TURN_SIZE,
+    TURN_ALREADY_HAS_TWO,
+    TURN_MUST_PLACE_TWO,
+    IllegalTurnError,
+    occupied_cell,
+    placement_out_of_radius,
+)
 from hexo.types import (
-    AXES,
     Coord,
     EngineConfig,
     GameStatus,
@@ -14,6 +31,8 @@ from hexo.types import (
     TurnRecord,
     UndoSnapshot,
 )
+
+SUBMOVES_PER_TURN = 2
 
 
 class LegalMovesView(Collection[Coord]):
@@ -99,8 +118,13 @@ class Hexo:
         self._to_move = Player.P2
         self._legal_moves_cache: set[Coord] = set()
         self._legal_moves_view = LegalMovesView(self)
-        self._radius_offsets = self._build_radius_offsets(self.config.placement_radius)
-        self._expand_legal_cache_from(self.config.opening_center)
+        self._radius_offsets = build_radius_offsets(self.config.placement_radius)
+        expand_legal_cache_from(
+            self.config.opening_center,
+            self._radius_offsets,
+            self._board,
+            self._legal_moves_cache,
+        )
 
     @classmethod
     def new(cls, config: EngineConfig | None = None) -> Hexo:
@@ -127,15 +151,14 @@ class Hexo:
             A reconstructed `Hexo` game after replaying all serialized moves.
         """
         game = cls.new(config=config)
+        push = game.push
         for raw_turn in state.get("turns", []):
             if len(raw_turn) not in (1, 2):
-                raise IllegalTurnError(
-                    "state contains invalid turn size; each turn must have 1 or 2 coordinates"
-                )
+                raise IllegalTurnError(STATE_INVALID_TURN_SIZE)
             for raw_coord in raw_turn:
-                game.push((int(raw_coord[0]), int(raw_coord[1])))
+                push((int(raw_coord[0]), int(raw_coord[1])))
         for raw_coord in state.get("pending", []):
-            game.push((int(raw_coord[0]), int(raw_coord[1])))
+            push((int(raw_coord[0]), int(raw_coord[1])))
         return game
 
     def to_state(self) -> State:
@@ -168,7 +191,7 @@ class Hexo:
         :return:
             Number of stones left to place in the current turn.
         """
-        return 2 - len(self._pending)
+        return SUBMOVES_PER_TURN - len(self._pending)
 
     def pending_moves(self) -> tuple[Coord, ...]:
         """
@@ -202,34 +225,28 @@ class Hexo:
             Tuple `(is_legal, reason)` where `reason` is `None` when legal.
         """
         if self._winner is not None:
-            return False, "game is over"
+            return False, GAME_IS_OVER
 
         if self._pending:
-            return False, "cannot play a full move while a partial turn is in progress"
+            return False, PARTIAL_TURN_IN_PROGRESS
 
-        if len(move) != 2:
-            return False, "each turn must place exactly 2 stones"
+        if len(move) != SUBMOVES_PER_TURN:
+            return False, TURN_MUST_PLACE_TWO
 
         a, b = move[0], move[1]
         if a == b:
-            return False, "duplicate coordinates in same turn"
+            return False, DUPLICATE_COORDINATES
         if a in self._board:
-            return False, f"occupied cell: {a}"
+            return False, occupied_cell(a)
         if b in self._board:
-            return False, f"occupied cell: {b}"
+            return False, occupied_cell(b)
         if a not in self._legal_moves_cache:
-            return (
-                False,
-                f"placement {a} has no occupied cell within distance <= {self.config.placement_radius}",
-            )
+            return False, placement_out_of_radius(a, self.config.placement_radius)
         if (
             b not in self._legal_moves_cache
             and hex_distance(a, b) > self.config.placement_radius
         ):
-            return (
-                False,
-                f"placement {b} has no occupied cell within distance <= {self.config.placement_radius}",
-            )
+            return False, placement_out_of_radius(b, self.config.placement_radius)
 
         return True, None
 
@@ -243,17 +260,14 @@ class Hexo:
             Tuple `(is_legal, reason)` where `reason` is `None` when legal.
         """
         if self._winner is not None:
-            return False, "game is over"
-        if len(self._pending) >= 2:
-            return False, "current turn already has two placements"
-        if coord in self._board:
-            return False, f"occupied cell: {coord}"
+            return False, GAME_IS_OVER
+        if len(self._pending) >= SUBMOVES_PER_TURN:
+            return False, TURN_ALREADY_HAS_TWO
         if coord in self._legal_moves_cache:
             return True, None
-        return (
-            False,
-            f"placement {coord} has no occupied cell within distance <= {self.config.placement_radius}",
-        )
+        if coord in self._board:
+            return False, occupied_cell(coord)
+        return False, placement_out_of_radius(coord, self.config.placement_radius)
 
     def play(self, move: Sequence[Coord]) -> TurnRecord:
         """
@@ -266,7 +280,7 @@ class Hexo:
         """
         legal, reason = self.is_legal(move)
         if not legal:
-            raise IllegalTurnError(reason or "illegal move")
+            raise IllegalTurnError(reason or ILLEGAL_MOVE)
 
         self.push(move[0])
         if self._winner is not None:
@@ -288,18 +302,27 @@ class Hexo:
         """
         legal, reason = self.is_legal_move(coord)
         if not legal:
-            raise IllegalTurnError(reason or "illegal placement")
+            raise IllegalTurnError(reason or ILLEGAL_PLACEMENT)
 
-        prev_to_move = self._to_move
+        to_move = self._to_move
+        prev_to_move = to_move
         prev_winner = self._winner
         prev_pending = tuple(self._pending)
         prev_history_len = len(self._turn_history)
-        removed_from_cache = coord in self._legal_moves_cache
+        board = self._board
+        legal_cache = self._legal_moves_cache
+        removed_from_cache = coord in legal_cache
 
-        self._board[coord] = self._to_move
-        self._stones_by_player[self._to_move].add(coord)
-        self._legal_moves_cache.discard(coord)
-        added_legal = self._expand_legal_cache_from(coord)
+        board[coord] = to_move
+        player_cells = self._stones_by_player[to_move]
+        player_cells.add(coord)
+        legal_cache.discard(coord)
+        added_legal = expand_legal_cache_from(
+            coord,
+            self._radius_offsets,
+            board,
+            legal_cache,
+        )
         self._pending.append(coord)
         self._undo_stack.append(
             (
@@ -309,28 +332,16 @@ class Hexo:
                 prev_pending,
                 prev_history_len,
                 removed_from_cache,
-                tuple(added_legal),
+                added_legal,
             )
         )
 
-        won = self._has_winning_line(self._to_move, (coord,))
+        won = has_winning_line_at(player_cells, coord, self.config.win_length)
         if won:
-            record = TurnRecord(
-                player=self._to_move, placements=tuple(self._pending), won=True
-            )
-            self._winner = self._to_move
-            self._turn_history.append(record)
-            self._pending.clear()
-            return record
+            return self._finish_turn(won=True)
 
-        if len(self._pending) == 2:
-            record = TurnRecord(
-                player=self._to_move, placements=tuple(self._pending), won=False
-            )
-            self._turn_history.append(record)
-            self._pending.clear()
-            self._to_move = self._to_move.opponent
-            return record
+        if len(self._pending) == SUBMOVES_PER_TURN:
+            return self._finish_turn(won=False)
 
         return None
 
@@ -342,7 +353,7 @@ class Hexo:
             Record of the affected turn before the undo.
         """
         if not self._undo_stack:
-            raise IllegalTurnError("cannot undo: no placement has been played")
+            raise IllegalTurnError(NO_PLACEMENT_TO_UNDO)
 
         affected = (
             self._turn_history[-1]
@@ -362,13 +373,14 @@ class Hexo:
         self._stones_by_player[prev_to_move].discard(coord)
         self._to_move = prev_to_move
         self._winner = prev_winner
-        self._pending = list(prev_pending)
+        self._pending.clear()
+        self._pending.extend(prev_pending)
         if removed_from_cache:
             self._legal_moves_cache.add(coord)
         for added in added_legal:
             self._legal_moves_cache.discard(added)
         if len(self._turn_history) > prev_history_len:
-            self._turn_history = self._turn_history[:prev_history_len]
+            self._turn_history.pop()
         return affected
 
     def at(self, coord: Coord) -> Player | None:
@@ -401,85 +413,19 @@ class Hexo:
         """
         return self._legal_moves_view
 
-    def _expand_legal_cache_from(self, anchor: Coord) -> set[Coord]:
+    def _finish_turn(self, won: bool) -> TurnRecord:
         """
-        Expand legal move cache from one occupied anchor coordinate.
-
-        :param anchor:
-            Occupied coordinate used to generate new reachable empty cells.
-        :return:
-            Coordinates that were newly introduced in the legal-move cache.
+        Finalize the current turn, updating history and turn ownership.
         """
-        aq, ar = anchor
-        added: set[Coord] = set()
-        for dq, dr in self._radius_offsets:
-            coord = (aq + dq, ar + dr)
-            if coord in self._board:
-                continue
-            if coord not in self._legal_moves_cache:
-                self._legal_moves_cache.add(coord)
-                added.add(coord)
-        return added
-
-    @staticmethod
-    def _build_radius_offsets(radius: int) -> tuple[Coord, ...]:
-        """
-        Build axial offsets for a hex disc of a given radius.
-
-        :param radius:
-            Radius in hex distance.
-        :return:
-            Tuple of `(dq, dr)` offsets within the radius.
-        """
-        offsets: list[Coord] = []
-        for dq in range(-radius, radius + 1):
-            dr_min = max(-radius, -dq - radius)
-            dr_max = min(radius, -dq + radius)
-            for dr in range(dr_min, dr_max + 1):
-                offsets.append((dq, dr))
-        return tuple(offsets)
-
-    def _has_winning_line(self, player: Player, newly_placed: Sequence[Coord]) -> bool:
-        """
-        Determine whether the latest move creates a winning alignment.
-
-        :param player:
-            Player whose board alignment should be evaluated.
-        :param newly_placed:
-            Two coordinates placed by `player` in the current turn.
-        :return:
-            `True` if the move creates a line meeting the win length.
-        """
-        needed = self.config.win_length
-        player_cells = self._stones_by_player[player]
-        for center in newly_placed:
-            for axis in AXES:
-                run = (
-                    1
-                    + self._count_direction(player_cells, center, axis)
-                    + self._count_direction(player_cells, center, (-axis[0], -axis[1]))
-                )
-                if run >= needed:
-                    return True
-        return False
-
-    @staticmethod
-    def _count_direction(cells: set[Coord], origin: Coord, step: Coord) -> int:
-        """
-        Count contiguous stones in one direction from an origin.
-
-        :param cells:
-            Set of coordinates occupied by one player.
-        :param origin:
-            Starting coordinate for the directional scan.
-        :param step:
-            Axis step increment used for scanning.
-        :return:
-            Number of contiguous cells encountered along the direction.
-        """
-        count = 0
-        cur = (origin[0] + step[0], origin[1] + step[1])
-        while cur in cells:
-            count += 1
-            cur = (cur[0] + step[0], cur[1] + step[1])
-        return count
+        record = TurnRecord(
+            player=self._to_move,
+            placements=tuple(self._pending),
+            won=won,
+        )
+        self._turn_history.append(record)
+        self._pending.clear()
+        if won:
+            self._winner = self._to_move
+        else:
+            self._to_move = self._to_move.opponent
+        return record
