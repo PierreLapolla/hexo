@@ -9,7 +9,9 @@ from hexo import GameStatus, Hexo
 
 def play_turn_random(game: Hexo, rng: random.Random):
     player = game.turn()
-    while game.turn() is player:
+    # One engine move = one stone, but each player keeps moving until their
+    # two-move turn is complete.
+    while game.status() is GameStatus.ONGOING and game.turn() is player:
         move = rng.choice(tuple(game.legal_moves))
         game.push(move)
 

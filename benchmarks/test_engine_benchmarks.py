@@ -33,7 +33,7 @@ def test_benchmark_legal_moves(benchmark) -> None:
 def test_benchmark_is_legal_move(benchmark) -> None:
     game = Hexo.new()
     target = min(game.legal_moves, key=_coord_key)
-    benchmark(lambda: game.is_legal_move(target))
+    benchmark(lambda: game.is_legal(target))
 
 
 def test_benchmark_push_undo_cycle(benchmark) -> None:

@@ -45,19 +45,23 @@ def expand_legal_cache_from(
     radius_offsets: Sequence[Coord],
     board: dict[Coord, Player],
     legal_moves_cache: set[Coord],
-) -> tuple[Coord, ...]:
+) -> list[Coord]:
     """
-    Expand legal moves around an occupied anchor and return only newly-added cells.
+    Expand legal moves around one occupied anchor.
+
+    Returns only the coordinates that were newly added to `legal_moves_cache`.
     """
     aq, ar = anchor
     added: list[Coord] = []
     for dq, dr in radius_offsets:
         candidate = (aq + dq, ar + dr)
-        if candidate in board or candidate in legal_moves_cache:
+        # In typical search positions, most neighborhood cells are already legal.
+        if candidate in legal_moves_cache or candidate in board:
             continue
         legal_moves_cache.add(candidate)
         added.append(candidate)
-    return tuple(added)
+
+    return added
 
 
 def has_winning_line(

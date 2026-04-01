@@ -2,7 +2,7 @@
 Provide core type definitions used by the Hexo engine.
 
 This module centralizes enums, coordinate aliases, and immutable records that
-describe game configuration and turn history.
+describe game configuration and move history.
 """
 
 from __future__ import annotations
@@ -69,20 +69,20 @@ class EngineConfig:
 
 
 @dataclass(frozen=True, slots=True)
-class TurnRecord:
+class MoveRecord:
     """
-    Record the outcome of a single executed turn.
+    Record one executed move (one stone placement).
 
     :param player:
-        Player who performed the turn.
-    :param placements:
-        Coordinates placed during the turn, in application order.
+        Player who placed the stone.
+    :param move:
+        Coordinate that was placed.
     :param won:
-        Whether this turn produced a winning line for `player`.
+        Whether this move produced a winning line for `player`.
     """
 
     player: Player
-    placements: tuple[Coord, ...]
+    move: Coord
     won: bool
 
 
@@ -90,10 +90,9 @@ UndoSnapshot = tuple[
     Coord,
     Player,
     Player | None,
-    tuple[Coord, ...],
     int,
     bool,
-    tuple[Coord, ...],
+    list[Coord],
 ]
 """
 Capture all state required to undo one `push` operation.
@@ -102,8 +101,7 @@ Fields:
 - pushed coordinate
 - previous player to move
 - previous winner
-- previous pending moves
-- previous turn-history length
+- previous turn-progress (moves already played in current turn)
 - whether pushed coordinate was removed from legal cache
 - coordinates newly added to legal cache by the push
 """

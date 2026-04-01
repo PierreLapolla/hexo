@@ -22,7 +22,9 @@
 - Both stones placed in the same turn must be on distinct empty cells.
 - Engine convention used in this repository:
   - `Hexo.new()` pre-applies the opening stone `(0, 0)` for `P1`.
-  - The first `play(...)` call is therefore `P2` placing 2 stones.
+  - One engine move is one stone placement (`push` takes one coordinate).
+  - The engine enforces turn structure by giving each player two consecutive moves.
+  - The first move after `Hexo.new()` is therefore `P2`'s first of two moves.
 
 ## 4. Legal Placement
 
@@ -53,4 +55,4 @@ Because `P1` starts with `(0, 0)`, there is always at least one occupied cell be
 ## 6. Game End
 
 - The game ends as soon as a win condition is met.
-- If both stones of a turn are placed and both create winning lines for the same player, the result is still a single win for that player.
+- If a player wins on the first move of their two-move turn, the second move is not played.

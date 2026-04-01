@@ -6,14 +6,14 @@ directly from `hexo` instead of internal modules.
 """
 
 from hexo.engine import Hexo
-from hexo.errors import IllegalTurnError
-from hexo.types import EngineConfig, GameStatus, Player, TurnRecord
+from hexo.errors import IllegalMoveError
+from hexo.types import EngineConfig, GameStatus, MoveRecord, Player
 
 __all__ = [
     "EngineConfig",
     "GameStatus",
     "Hexo",
-    "IllegalTurnError",
+    "IllegalMoveError",
+    "MoveRecord",
     "Player",
-    "TurnRecord",
 ]

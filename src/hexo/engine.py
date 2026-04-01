@@ -3,36 +3,31 @@ from __future__ import annotations
 from collections.abc import Collection, Iterator, Sequence
 
 from hexo._engine_utils import (
-    hex_distance,
     build_radius_offsets,
     expand_legal_cache_from,
     has_winning_line_at,
 )
 from hexo.errors import (
-    DUPLICATE_COORDINATES,
     GAME_IS_OVER,
     ILLEGAL_MOVE,
-    ILLEGAL_PLACEMENT,
-    NO_PLACEMENT_TO_UNDO,
-    PARTIAL_TURN_IN_PROGRESS,
-    STATE_INVALID_TURN_SIZE,
-    TURN_ALREADY_HAS_TWO,
-    TURN_MUST_PLACE_TWO,
-    IllegalTurnError,
+    INVALID_COORDINATE,
+    NO_MOVE_TO_UNDO,
+    STATE_INVALID_MOVE,
+    IllegalMoveError,
+    move_out_of_radius,
     occupied_cell,
-    placement_out_of_radius,
 )
 from hexo.types import (
     Coord,
     EngineConfig,
     GameStatus,
+    MoveRecord,
     Player,
     State,
-    TurnRecord,
     UndoSnapshot,
 )
 
-SUBMOVES_PER_TURN = 2
+MOVES_PER_TURN = 2
 
 
 class LegalMovesView(Collection[Coord]):
@@ -90,12 +85,10 @@ class LegalMovesView(Collection[Coord]):
 
 class Hexo:
     """
-    Single public API for Hexo.
+    Public Hexo engine API.
 
-    The opening stone for P1 is automatically placed at (0, 0) on init.
-
-    :param config:
-        Optional engine configuration. When omitted, defaults are used.
+    The opening stone for `P1` is automatically placed at `(0, 0)` on init.
+    Every call to `push` places exactly one stone.
     """
 
     def __init__(self, config: EngineConfig | None = None) -> None:
@@ -111,11 +104,11 @@ class Hexo:
             Player.P1: {self.config.opening_center},
             Player.P2: set(),
         }
-        self._turn_history: list[TurnRecord] = []
+        self._move_history: list[MoveRecord] = []
         self._undo_stack: list[UndoSnapshot] = []
-        self._pending: list[Coord] = []
         self._winner: Player | None = None
         self._to_move = Player.P2
+        self._moves_played_in_turn = 0
         self._legal_moves_cache: set[Coord] = set()
         self._legal_moves_view = LegalMovesView(self)
         self._radius_offsets = build_radius_offsets(self.config.placement_radius)
@@ -143,8 +136,11 @@ class Hexo:
         """
         Rebuild a game from serialized move history.
 
+        Expected format:
+            `{ "moves": [[q, r], ...] }`
+
         :param state:
-            Serialized state with `turns` and optional `pending` arrays.
+            Serialized state dictionary.
         :param config:
             Optional engine configuration to use for validation.
         :return:
@@ -152,13 +148,13 @@ class Hexo:
         """
         game = cls.new(config=config)
         push = game.push
-        for raw_turn in state.get("turns", []):
-            if len(raw_turn) not in (1, 2):
-                raise IllegalTurnError(STATE_INVALID_TURN_SIZE)
-            for raw_coord in raw_turn:
-                push((int(raw_coord[0]), int(raw_coord[1])))
-        for raw_coord in state.get("pending", []):
-            push((int(raw_coord[0]), int(raw_coord[1])))
+
+        raw_moves = state.get("moves")
+        if isinstance(raw_moves, (str, bytes)) or not isinstance(raw_moves, Sequence):
+            raise IllegalMoveError(STATE_INVALID_MOVE)
+        for raw_coord in raw_moves:
+            push(cls._coord_from_state(raw_coord))
+
         return game
 
     def to_state(self) -> State:
@@ -166,14 +162,10 @@ class Hexo:
         Serialize the current game into a portable dictionary representation.
 
         :return:
-            A state dictionary containing replayable turn history and pending placements.
+            A state dictionary with replayable move history.
         """
-        turns = [
-            [[coord[0], coord[1]] for coord in record.placements]
-            for record in self._turn_history
-        ]
-        pending = [[coord[0], coord[1]] for coord in self._pending]
-        return {"turns": turns, "pending": pending}
+        moves = [[record.move[0], record.move[1]] for record in self._move_history]
+        return {"moves": moves}
 
     def turn(self) -> Player:
         """
@@ -186,21 +178,14 @@ class Hexo:
 
     def moves_left_in_turn(self) -> int:
         """
-        Return how many placements remain for the current player's turn.
+        Return remaining moves for the current player's turn.
 
         :return:
-            Number of stones left to place in the current turn.
+            `2` when starting a turn, `1` after the first move, `0` when game is over.
         """
-        return SUBMOVES_PER_TURN - len(self._pending)
-
-    def pending_moves(self) -> tuple[Coord, ...]:
-        """
-        Return coordinates already placed in the current unfinished turn.
-
-        :return:
-            Tuple containing zero or one coordinates for the active turn.
-        """
-        return tuple(self._pending)
+        if self._winner is not None:
+            return 0
+        return MOVES_PER_TURN - self._moves_played_in_turn
 
     def status(self) -> GameStatus:
         """
@@ -215,106 +200,60 @@ class Hexo:
             return GameStatus.P2_WON
         return GameStatus.ONGOING
 
-    def is_legal(self, move: Sequence[Coord]) -> tuple[bool, str | None]:
+    def is_legal(self, move: Coord) -> tuple[bool, str | None]:
         """
-        Validate whether a two-stone turn is currently legal.
+        Validate a single-stone move.
 
         :param move:
-            Candidate move containing exactly two coordinates.
+            Candidate coordinate `(q, r)`.
         :return:
             Tuple `(is_legal, reason)` where `reason` is `None` when legal.
         """
-        if self._winner is not None:
-            return False, GAME_IS_OVER
+        coord, reason = self._normalize_coord(move)
+        if reason is not None:
+            return False, reason
+        return self._is_legal_coord(coord)
 
-        if self._pending:
-            return False, PARTIAL_TURN_IN_PROGRESS
+    def push(self, move: Coord) -> MoveRecord:
+        """
+        Place one stone for the current player.
 
-        if len(move) != SUBMOVES_PER_TURN:
-            return False, TURN_MUST_PLACE_TWO
+        The side to move changes only after every second move, matching Hexo's
+        rule that each player places two stones per turn.
 
-        a, b = move[0], move[1]
-        if a == b:
-            return False, DUPLICATE_COORDINATES
-        if a in self._board:
-            return False, occupied_cell(a)
-        if b in self._board:
-            return False, occupied_cell(b)
-        if a not in self._legal_moves_cache:
-            return False, placement_out_of_radius(a, self.config.placement_radius)
+        :param move:
+            Coordinate `(q, r)` to place.
+        :return:
+            Immutable record describing the applied move.
+        """
+        # Fast path for bot/search loops: valid tuple move already in legal cache.
         if (
-            b not in self._legal_moves_cache
-            and hex_distance(a, b) > self.config.placement_radius
+            self._winner is None
+            and isinstance(move, tuple)
+            and len(move) == 2
+            and isinstance(move[0], int)
+            and isinstance(move[1], int)
+            and move in self._legal_moves_cache
         ):
-            return False, placement_out_of_radius(b, self.config.placement_radius)
+            coord = move
+        else:
+            coord, reason = self._normalize_coord(move)
+            if reason is not None:
+                raise IllegalMoveError(reason)
 
-        return True, None
+            legal, reason = self._is_legal_coord(coord)
+            if not legal:
+                raise IllegalMoveError(reason or ILLEGAL_MOVE)
 
-    def is_legal_move(self, coord: Coord) -> tuple[bool, str | None]:
-        """
-        Validate a single placement for submove-based play.
-
-        :param coord:
-            Candidate coordinate to place for the current player.
-        :return:
-            Tuple `(is_legal, reason)` where `reason` is `None` when legal.
-        """
-        if self._winner is not None:
-            return False, GAME_IS_OVER
-        if len(self._pending) >= SUBMOVES_PER_TURN:
-            return False, TURN_ALREADY_HAS_TWO
-        if coord in self._legal_moves_cache:
-            return True, None
-        if coord in self._board:
-            return False, occupied_cell(coord)
-        return False, placement_out_of_radius(coord, self.config.placement_radius)
-
-    def play(self, move: Sequence[Coord]) -> TurnRecord:
-        """
-        Apply a legal move and update game state.
-
-        :param move:
-            Sequence containing exactly two coordinates for the current player.
-        :return:
-            Immutable record describing the applied turn.
-        """
-        legal, reason = self.is_legal(move)
-        if not legal:
-            raise IllegalTurnError(reason or ILLEGAL_MOVE)
-
-        self.push(move[0])
-        if self._winner is not None:
-            return self._turn_history[-1]
-        self.push(move[1])
-        return self._turn_history[-1]
-
-    def push(self, coord: Coord) -> TurnRecord | None:
-        """
-        Place one stone for the current player as a submove.
-
-        This method enables search workflows that evaluate positions between the
-        first and second placement of a turn.
-
-        :param coord:
-            Coordinate to place for the current player.
-        :return:
-            `TurnRecord` when a turn is completed (or wins early), otherwise `None`.
-        """
-        legal, reason = self.is_legal_move(coord)
-        if not legal:
-            raise IllegalTurnError(reason or ILLEGAL_PLACEMENT)
-
-        to_move = self._to_move
-        prev_to_move = to_move
+        prev_to_move = self._to_move
         prev_winner = self._winner
-        prev_pending = tuple(self._pending)
-        prev_history_len = len(self._turn_history)
+        prev_turn_progress = self._moves_played_in_turn
         board = self._board
         legal_cache = self._legal_moves_cache
         removed_from_cache = coord in legal_cache
 
-        board[coord] = to_move
-        player_cells = self._stones_by_player[to_move]
+        board[coord] = prev_to_move
+        player_cells = self._stones_by_player[prev_to_move]
         player_cells.add(coord)
         legal_cache.discard(coord)
         added_legal = expand_legal_cache_from(
@@ -323,65 +262,69 @@ class Hexo:
             board,
             legal_cache,
         )
-        self._pending.append(coord)
+
+        # Avoid line scanning until this player has enough stones to win.
+        if len(player_cells) >= self.config.win_length:
+            won = has_winning_line_at(player_cells, coord, self.config.win_length)
+        else:
+            won = False
+        record = MoveRecord(player=prev_to_move, move=coord, won=won)
+        self._move_history.append(record)
         self._undo_stack.append(
             (
                 coord,
                 prev_to_move,
                 prev_winner,
-                prev_pending,
-                prev_history_len,
+                prev_turn_progress,
                 removed_from_cache,
                 added_legal,
             )
         )
 
-        won = has_winning_line_at(player_cells, coord, self.config.win_length)
         if won:
-            return self._finish_turn(won=True)
+            self._winner = prev_to_move
+            return record
 
-        if len(self._pending) == SUBMOVES_PER_TURN:
-            return self._finish_turn(won=False)
+        if prev_turn_progress == 0:
+            self._moves_played_in_turn = 1
+        else:
+            self._moves_played_in_turn = 0
+            self._to_move = prev_to_move.opponent
 
-        return None
+        return record
 
-    def undo(self) -> TurnRecord:
+    def undo(self) -> MoveRecord:
         """
-        Revert the last applied placement.
+        Revert the last applied move.
 
         :return:
-            Record of the affected turn before the undo.
+            Record of the undone move.
         """
         if not self._undo_stack:
-            raise IllegalTurnError(NO_PLACEMENT_TO_UNDO)
+            raise IllegalMoveError(NO_MOVE_TO_UNDO)
 
-        affected = (
-            self._turn_history[-1]
-            if self._turn_history
-            else TurnRecord(self._to_move, tuple(self._pending), False)
-        )
+        record = self._move_history.pop()
         (
             coord,
             prev_to_move,
             prev_winner,
-            prev_pending,
-            prev_history_len,
+            prev_turn_progress,
             removed_from_cache,
             added_legal,
         ) = self._undo_stack.pop()
+
         self._board.pop(coord, None)
-        self._stones_by_player[prev_to_move].discard(coord)
+        self._stones_by_player[record.player].discard(coord)
         self._to_move = prev_to_move
         self._winner = prev_winner
-        self._pending.clear()
-        self._pending.extend(prev_pending)
+        self._moves_played_in_turn = prev_turn_progress
+
         if removed_from_cache:
             self._legal_moves_cache.add(coord)
         for added in added_legal:
             self._legal_moves_cache.discard(added)
-        if len(self._turn_history) > prev_history_len:
-            self._turn_history.pop()
-        return affected
+
+        return record
 
     def at(self, coord: Coord) -> Player | None:
         """
@@ -406,26 +349,57 @@ class Hexo:
     @property
     def legal_moves(self) -> Collection[Coord]:
         """
-        Return a live view of all currently legal single-move candidates.
+        Return a live view of all currently legal moves.
 
         :return:
             Collection view of legal coordinates.
         """
         return self._legal_moves_view
 
-    def _finish_turn(self, won: bool) -> TurnRecord:
+    @staticmethod
+    def _normalize_coord(move: object) -> tuple[Coord | None, str | None]:
         """
-        Finalize the current turn, updating history and turn ownership.
+        Validate runtime move shape and return a normalized coordinate.
         """
-        record = TurnRecord(
-            player=self._to_move,
-            placements=tuple(self._pending),
-            won=won,
-        )
-        self._turn_history.append(record)
-        self._pending.clear()
-        if won:
-            self._winner = self._to_move
+        if isinstance(move, tuple):
+            if len(move) != 2:
+                return None, INVALID_COORDINATE
+            q, r = move
+        elif isinstance(move, list):
+            if len(move) != 2:
+                return None, INVALID_COORDINATE
+            q, r = move
         else:
-            self._to_move = self._to_move.opponent
-        return record
+            return None, INVALID_COORDINATE
+        if not isinstance(q, int) or not isinstance(r, int):
+            return None, INVALID_COORDINATE
+        if isinstance(move, tuple):
+            return move, None
+        return (q, r), None
+
+    def _is_legal_coord(self, coord: Coord) -> tuple[bool, str | None]:
+        """
+        Validate one already-normalized coordinate.
+        """
+        if self._winner is not None:
+            return False, GAME_IS_OVER
+        if coord in self._legal_moves_cache:
+            return True, None
+        if coord in self._board:
+            return False, occupied_cell(coord)
+        return False, move_out_of_radius(coord, self.config.placement_radius)
+
+    @staticmethod
+    def _coord_from_state(raw_coord: object) -> Coord:
+        """
+        Parse one serialized coordinate pair.
+        """
+        if isinstance(raw_coord, (str, bytes)) or not isinstance(raw_coord, Sequence):
+            raise IllegalMoveError(STATE_INVALID_MOVE)
+        if len(raw_coord) != 2:
+            raise IllegalMoveError(STATE_INVALID_MOVE)
+
+        try:
+            return int(raw_coord[0]), int(raw_coord[1])
+        except (TypeError, ValueError) as exc:
+            raise IllegalMoveError(STATE_INVALID_MOVE) from exc

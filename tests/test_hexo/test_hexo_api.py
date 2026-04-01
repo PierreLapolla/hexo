@@ -1,53 +1,59 @@
-from hexo import GameStatus, Hexo, IllegalTurnError, Player
+from hexo import GameStatus, Hexo, IllegalMoveError, Player
 
 
 def test_game_starts_with_center_occupied() -> None:
     game = Hexo.new()
     assert game.turn() is Player.P2
     assert game.at((0, 0)) is Player.P1
+    assert game.moves_left_in_turn() == 2
 
 
-def test_each_played_turn_requires_two_stones() -> None:
+def test_is_legal_validates_single_stone_move() -> None:
     game = Hexo.new()
-    legal, reason = game.is_legal([(1, 0)])
+
+    legal, reason = game.is_legal((1, 0))
+    assert legal is True
+    assert reason is None
+
+    legal, reason = game.is_legal(((1, 0), (0, 1)))
     assert legal is False
-    assert reason == "each turn must place exactly 2 stones"
+    assert reason == "move must be an axial coordinate (q, r)"
 
 
 def test_distance_rule_enforced() -> None:
     game = Hexo.new()
-    legal, reason = game.is_legal([(9, 0), (1, 0)])
+    legal, reason = game.is_legal((9, 0))
     assert legal is False
     assert "within distance <= 8" in (reason or "")
 
 
-def test_play_and_undo() -> None:
+def test_push_one_move_and_undo() -> None:
     game = Hexo.new()
-    record = game.play([(1, 0), (0, 1)])
+
+    record = game.push((1, 0))
     assert record.player is Player.P2
-    assert game.turn() is Player.P1
+    assert record.move == (1, 0)
+    assert record.won is False
+    assert game.turn() is Player.P2
+    assert game.moves_left_in_turn() == 1
 
     undone = game.undo()
-    assert undone.placements == ((1, 0), (0, 1))
+    assert undone.move == (1, 0)
     assert game.turn() is Player.P2
-    assert game.at((1, 0)) is Player.P2
-    assert game.at((0, 1)) is None
-
-
-def test_submoves_allow_partial_turn_search_state() -> None:
-    game = Hexo.new()
-    first = game.push((1, 0))
-    assert first is None
-    assert game.moves_left_in_turn() == 1
-    assert game.pending_moves() == ((1, 0),)
-    assert game.turn() is Player.P2
-
-    second = game.push((0, 1))
-    assert second is not None
-    assert second.placements == ((1, 0), (0, 1))
     assert game.moves_left_in_turn() == 2
-    assert game.pending_moves() == ()
+    assert game.at((1, 0)) is None
+
+
+def test_player_switches_after_two_moves() -> None:
+    game = Hexo.new()
+
+    game.push((1, 0))
+    assert game.turn() is Player.P2
+    assert game.moves_left_in_turn() == 1
+
+    game.push((0, 1))
     assert game.turn() is Player.P1
+    assert game.moves_left_in_turn() == 2
 
 
 def test_legal_moves_produces_candidates() -> None:
@@ -56,7 +62,7 @@ def test_legal_moves_produces_candidates() -> None:
     assert len(moves) > 0
     assert (0, 0) not in moves
     for coord in moves:
-        legal, reason = game.is_legal_move(coord)
+        legal, reason = game.is_legal(coord)
         assert legal is True
         assert reason is None
 
@@ -76,27 +82,39 @@ def test_legal_moves_cache_updates_on_push_and_undo() -> None:
     assert after == before
 
 
-def test_connect_six_sets_winner() -> None:
+def test_connect_six_sets_winner_even_mid_turn() -> None:
     game = Hexo.new()
-    game.play([(8, 0), (7, 1)])  # P2 filler
-    game.play([(1, 0), (2, 0)])  # P1
-    game.play([(8, 1), (7, 2)])  # P2 filler
-    game.play([(3, 0), (4, 0)])  # P1
-    game.play([(8, 2), (7, 3)])  # P2 filler
-    final = game.play([(5, 0), (6, 0)])  # P1
+
+    game.push((8, 0))  # P2
+    game.push((7, 1))  # P2
+
+    game.push((1, 0))  # P1
+    game.push((2, 0))  # P1
+
+    game.push((8, 2))  # P2
+    game.push((7, 3))  # P2
+
+    game.push((3, 0))  # P1
+    game.push((4, 0))  # P1
+
+    game.push((8, 4))  # P2
+    game.push((7, 5))  # P2
+
+    final = game.push((5, 0))  # P1 wins with 0..5 on (1, 0) axis
     assert final.won is True
     assert game.status() is GameStatus.P1_WON
 
     try:
-        game.play([(6, 1), (6, 2)])
-        assert False, "play after game end should fail"
-    except IllegalTurnError:
+        game.push((6, 1))
+        assert False, "push after game end should fail"
+    except IllegalMoveError:
         pass
 
 
-def test_state_roundtrip() -> None:
+def test_state_roundtrip_with_partial_turn_progress() -> None:
     game = Hexo.new()
-    game.play([(1, 0), (0, 1)])
+    game.push((1, 0))
+    game.push((0, 1))
     game.push((2, 0))
     state = game.to_state()
 
@@ -104,4 +122,12 @@ def test_state_roundtrip() -> None:
     assert restored.turn() is game.turn()
     assert restored.status() is game.status()
     assert restored.at((0, 0)) is Player.P1
-    assert restored.pending_moves() == game.pending_moves()
+    assert restored.moves_left_in_turn() == game.moves_left_in_turn()
+
+
+def test_from_state_rejects_legacy_format() -> None:
+    try:
+        Hexo.from_state({"turns": [[[1, 0], [0, 1]]], "pending": []})
+        assert False, "legacy turns/pending state should be rejected"
+    except IllegalMoveError:
+        pass
